@@ -3,6 +3,10 @@ import time
 import os
 from urllib.parse import quote_plus
 from typing import List, Dict, Optional
+from dotenv import load_dotenv
+
+# Charge les variables d'environnement (dont FIRECRAWL_API_KEY) si un .env est présent
+load_dotenv()
 
 
 class LeboncoinScraper:
@@ -16,7 +20,13 @@ class LeboncoinScraper:
             api_key: Clé API Firecrawl (ou via variable d'environnement FIRECRAWL_API_KEY)
         """
         if api_key is None:
-            api_key = os.getenv('FIRECRAWL_API_KEY', 'fc-779c2dbbb7264862a12028574a977e53')
+            api_key = os.getenv('FIRECRAWL_API_KEY')
+        
+        if not api_key:
+            raise ValueError(
+                "FIRECRAWL_API_KEY introuvable. Définissez la variable d'environnement "
+                "ou ajoutez-la dans un fichier .env (FIRECRAWL_API_KEY=...)."
+            )
         
         self.fc = Firecrawl(api_key=api_key)
         self.base_url = "https://www.leboncoin.fr/recherche"
