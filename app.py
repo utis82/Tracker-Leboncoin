@@ -191,8 +191,9 @@ app.layout = html.Div(style={
         'margin': '0 auto'
     }),
     
-    # Store pour les données
-    dcc.Store(id='scraped-data')
+    # Stores pour les données et actions client-side
+    dcc.Store(id='scraped-data'),
+    dcc.Store(id='link-opener')
 ])
 
 
@@ -248,6 +249,7 @@ def scrape_and_display(n_clicks, model, year_min, year_max, pages):
         ])
         
         graph_div = dcc.Graph(
+            id='ads-graph',
             figure=fig,
             style={'height': '600px'},
             config={'displayModeBar': True, 'displaylogo': False}
@@ -318,6 +320,7 @@ def create_scatter_plot(df):
         plot_bgcolor=COLORS['card'],
         paper_bgcolor=COLORS['card'],
         hovermode='closest',
+        clickmode='event+select',
         font=dict(color=COLORS['text'])
     )
     
@@ -416,6 +419,29 @@ def create_listings_grid(df):
         'gap': '20px',
         'marginTop': '40px'
     }, children=listings)
+
+
+# Callback client-side pour ouvrir un nouvel onglet sur clic d'un point du graphique
+app.clientside_callback(
+    """
+    function(clickData) {
+        if (!clickData || !clickData.points || clickData.points.length === 0) {
+            return window.dash_clientside.no_update;
+        }
+        const point = clickData.points[0];
+        if (point.customdata && point.customdata.length > 0) {
+            const url = point.customdata[0];
+            if (url) {
+                window.open(url, '_blank');
+            }
+        }
+        return window.dash_clientside.no_update;
+    }
+    """,
+    Output('link-opener', 'data'),
+    Input('ads-graph', 'clickData'),
+    prevent_initial_call=True
+)
 
 
 if __name__ == '__main__':
