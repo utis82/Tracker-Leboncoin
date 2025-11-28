@@ -3,10 +3,12 @@ import time
 import os
 from urllib.parse import quote_plus
 from typing import List, Dict, Optional
+from pathlib import Path
 from dotenv import load_dotenv
 
-# Charge les variables d'environnement (dont FIRECRAWL_API_KEY) si un .env est présent
-load_dotenv()
+# Charge explicitement le .env situé à la racine du projet
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+load_dotenv(PROJECT_ROOT / ".env")
 
 
 class LeboncoinScraper:
