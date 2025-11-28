@@ -5,6 +5,8 @@ import pandas as pd
 from datetime import datetime
 import json
 import os
+from geopy.geocoders import Nominatim
+from geopy.extra.rate_limiter import RateLimiter
 
 from scraper.leboncoin import LeboncoinScraper
 from scraper.cleaning import DataCleaner
@@ -12,6 +14,19 @@ from scraper.cleaning import DataCleaner
 # Configuration
 CACHE_DIR = "data/cache"
 os.makedirs(CACHE_DIR, exist_ok=True)
+GEO_CACHE_PATH = os.path.join(CACHE_DIR, "geocode_cache.json")
+
+# Cache de géocodage pour éviter les requêtes répétées
+_geocode_cache = {}
+if os.path.exists(GEO_CACHE_PATH):
+    try:
+        with open(GEO_CACHE_PATH, 'r', encoding='utf-8') as f:
+            _geocode_cache = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        _geocode_cache = {}
+
+geolocator = Nominatim(user_agent="moto-leboncoin-analyzer")
+geocode = RateLimiter(geolocator.geocode, min_delay_seconds=1, max_retries=2, swallow_exceptions=True)
 
 # Initialisation de l'app Dash
 app = dash.Dash(__name__, suppress_callback_exceptions=True)
@@ -27,6 +42,74 @@ COLORS = {
     'success': '#00ba7c',
     'border': '#2f3336'
 }
+
+
+def hidden_section_style():
+    return {
+        'maxWidth': '1400px',
+        'margin': '0 auto 40px',
+        'display': 'none'
+    }
+
+
+def visible_section_style():
+    style = hidden_section_style()
+    style['display'] = 'block'
+    return style
+
+
+def save_geocode_cache():
+    """Sauvegarde le cache de géocodage sur disque."""
+    try:
+        with open(GEO_CACHE_PATH, 'w', encoding='utf-8') as f:
+            json.dump(_geocode_cache, f, ensure_ascii=False, indent=2)
+    except OSError:
+        pass
+
+
+def get_coordinates(location: str):
+    """Retourne (lat, lon) pour une localisation donnée."""
+    if not location or location == "Non spécifié":
+        return None, None
+    
+    location = location.strip()
+    
+    if location in _geocode_cache:
+        return _geocode_cache[location]
+    
+    try:
+        result = geocode(f"{location}, France")
+        if result:
+            coords = (result.latitude, result.longitude)
+        else:
+            coords = (None, None)
+    except Exception:
+        coords = (None, None)
+    
+    _geocode_cache[location] = coords
+    save_geocode_cache()
+    return coords
+
+
+def enrich_with_coordinates(df: pd.DataFrame) -> pd.DataFrame:
+    """Ajoute les colonnes latitude/longitude basées sur la localisation."""
+    if 'location' not in df.columns:
+        df['latitude'] = None
+        df['longitude'] = None
+        return df
+    
+    df = df.copy()
+    latitudes = []
+    longitudes = []
+    
+    for location in df['location']:
+        lat, lon = get_coordinates(location)
+        latitudes.append(lat)
+        longitudes.append(lon)
+    
+    df['latitude'] = latitudes
+    df['longitude'] = longitudes
+    return df
 
 # Layout de l'application
 app.layout = html.Div(style={
@@ -179,11 +262,10 @@ app.layout = html.Div(style={
     ),
     
     # Graphique
-    html.Div(id='graph-container', style={
-        'maxWidth': '1400px',
-        'margin': '0 auto 40px',
-        'display': 'none'
-    }),
+    html.Div(id='graph-container', style=hidden_section_style()),
+    
+    # Carte
+    html.Div(id='map-container', style=hidden_section_style()),
     
     # Liste des annonces
     html.Div(id='listings-container', style={
@@ -202,6 +284,8 @@ app.layout = html.Div(style={
      Output('status-message', 'children'),
      Output('graph-container', 'style'),
      Output('graph-container', 'children'),
+     Output('map-container', 'style'),
+     Output('map-container', 'children'),
      Output('listings-container', 'children')],
     [Input('btn-scrape', 'n_clicks')],
     [State('input-model', 'value'),
@@ -211,10 +295,10 @@ app.layout = html.Div(style={
 )
 def scrape_and_display(n_clicks, model, year_min, year_max, pages):
     if n_clicks == 0:
-        return None, "", {'display': 'none'}, None, None
+        return None, "", hidden_section_style(), None, hidden_section_style(), None, None
     
     if not model or not model.strip():
-        return None, html.Div("⚠️ Veuillez entrer un modèle de moto", style={'color': '#f4212e'}), {'display': 'none'}, None, None
+        return None, html.Div("⚠️ Veuillez entrer un modèle de moto", style={'color': '#f4212e'}), hidden_section_style(), None, hidden_section_style(), None, None
     
     try:
         # Scraping
@@ -228,14 +312,15 @@ def scrape_and_display(n_clicks, model, year_min, year_max, pages):
         raw_data = scraper.scrape(model, year_min, year_max, pages)
         
         if not raw_data:
-            return None, html.Div("❌ Aucune annonce trouvée", style={'color': '#f4212e'}), {'display': 'none'}, None, None
+            return None, html.Div("❌ Aucune annonce trouvée", style={'color': '#f4212e'}), hidden_section_style(), None, hidden_section_style(), None, None
         
         # Nettoyage
         cleaner = DataCleaner()
         df = cleaner.clean(raw_data)
+        df = enrich_with_coordinates(df)
         
         if df.empty:
-            return None, html.Div("❌ Aucune donnée exploitable après nettoyage", style={'color': '#f4212e'}), {'display': 'none'}, None, None
+            return None, html.Div("❌ Aucune donnée exploitable après nettoyage", style={'color': '#f4212e'}), hidden_section_style(), None, hidden_section_style(), None, None
         
         # Création du graphique
         fig = create_scatter_plot(df)
@@ -255,14 +340,35 @@ def scrape_and_display(n_clicks, model, year_min, year_max, pages):
             config={'displayModeBar': True, 'displaylogo': False}
         )
         
-        return df.to_dict('records'), success_msg, {'display': 'block'}, graph_div, listings
+        map_fig = create_map(df)
+        if map_fig:
+            map_div = dcc.Graph(
+                id='map-graph',
+                figure=map_fig,
+                style={'height': '600px'},
+                config={'displayModeBar': False, 'displaylogo': False}
+            )
+            map_style = visible_section_style()
+        else:
+            map_style = hidden_section_style()
+            map_div = None
+        
+        return (
+            df.to_dict('records'),
+            success_msg,
+            visible_section_style(),
+            graph_div,
+            map_style,
+            map_div,
+            listings
+        )
         
     except Exception as e:
         error_msg = html.Div([
             html.Div("❌ Erreur lors du scraping", style={'color': '#f4212e', 'fontWeight': '600'}),
             html.Div(str(e), style={'fontSize': '0.9rem', 'marginTop': '10px'})
         ])
-        return None, error_msg, {'display': 'none'}, None, None
+        return None, error_msg, hidden_section_style(), None, hidden_section_style(), None, None
 
 
 def create_scatter_plot(df):
@@ -322,6 +428,60 @@ def create_scatter_plot(df):
         hovermode='closest',
         clickmode='event+select',
         font=dict(color=COLORS['text'])
+    )
+    
+    return fig
+
+
+def create_map(df):
+    """Crée la carte des annonces géolocalisées."""
+    if 'latitude' not in df.columns or 'longitude' not in df.columns:
+        return None
+    
+    map_df = df.dropna(subset=['latitude', 'longitude'])
+    if map_df.empty:
+        return None
+    
+    hover_text = []
+    for _, row in map_df.iterrows():
+        text = f"<b>{row.get('title', 'N/A')[:50]}</b><br>"
+        text += f"💰 {row.get('price', 0):,.0f} €<br>"
+        text += f"📏 {row.get('mileage', 0):,.0f} km<br>"
+        text += f"📍 {row.get('location', 'N/A')}"
+        hover_text.append(text)
+    
+    fig = go.Figure(go.Scattermapbox(
+        lat=map_df['latitude'],
+        lon=map_df['longitude'],
+        mode='markers',
+        marker=dict(
+            size=14,
+            color=map_df['price'],
+            colorscale='Turbo',
+            showscale=True,
+            colorbar=dict(title='Prix €'),
+            opacity=0.85
+        ),
+        text=hover_text,
+        hovertemplate='%{text}<extra></extra>',
+        customdata=map_df[['link']].values if 'link' in map_df.columns else None
+    ))
+    
+    center_lat = map_df['latitude'].mean()
+    center_lon = map_df['longitude'].mean()
+    
+    fig.update_layout(
+        mapbox=dict(
+            style='open-street-map',
+            zoom=5,
+            center=dict(lat=center_lat, lon=center_lon)
+        ),
+        margin=dict(l=0, r=0, t=0, b=0),
+        paper_bgcolor=COLORS['card'],
+        title=dict(
+            text='Répartition géographique des annonces',
+            font=dict(color=COLORS['text'])
+        )
     )
     
     return fig
@@ -424,7 +584,20 @@ def create_listings_grid(df):
 # Callback client-side pour ouvrir un nouvel onglet sur clic d'un point du graphique
 app.clientside_callback(
     """
-    function(clickData) {
+    function(scatterClick, mapClick) {
+        const ctx = dash_clientside.callback_context;
+        if (!ctx || !ctx.triggered || ctx.triggered.length === 0) {
+            return window.dash_clientside.no_update;
+        }
+        const triggered = ctx.triggered[0].prop_id;
+        let clickData = null;
+        if (triggered === 'ads-graph.clickData') {
+            clickData = scatterClick;
+        } else if (triggered === 'map-graph.clickData') {
+            clickData = mapClick;
+        } else {
+            return window.dash_clientside.no_update;
+        }
         if (!clickData || !clickData.points || clickData.points.length === 0) {
             return window.dash_clientside.no_update;
         }
@@ -440,6 +613,7 @@ app.clientside_callback(
     """,
     Output('link-opener', 'data'),
     Input('ads-graph', 'clickData'),
+    Input('map-graph', 'clickData'),
     prevent_initial_call=True
 )
 

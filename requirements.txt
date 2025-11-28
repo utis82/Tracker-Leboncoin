@@ -24,6 +24,7 @@ beautifulsoup4==4.12.3
 
 # Utilitaires
 python-dotenv==1.0.1
+geopy==2.4.1
 
 # Optionnel pour création d'exécutable
 # pyinstaller==6.11.1
