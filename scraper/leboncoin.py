@@ -1,7 +1,37 @@
 try:
-    from firecrawl import Firecrawl  # type: ignore
+    from firecrawl import Firecrawl as _FirecrawlBase  # type: ignore
 except ImportError:
-    from firecrawl.firecrawl import FirecrawlApp as Firecrawl  # type: ignore
+    from firecrawl.firecrawl import FirecrawlApp as _FirecrawlBase  # type: ignore
+
+if not hasattr(_FirecrawlBase, 'scrape'):
+    class Firecrawl(_FirecrawlBase):  # type: ignore
+        """Compatibilité pour les versions firecrawl-py sans méthode scrape()."""
+
+        class _CompatResponse:
+            def __init__(self, payload):
+                self.json = payload
+
+        def scrape(self, url, formats=None):
+            params = {}
+            extract_options = {}
+            if formats:
+                fmt = formats[0] if isinstance(formats, list) and formats else {}
+                if fmt.get('type') == 'json':
+                    if fmt.get('prompt'):
+                        extract_options['prompt'] = fmt['prompt']
+                    if fmt.get('schema'):
+                        extract_options['schema'] = fmt['schema']
+            if extract_options:
+                params['formats'] = ['extract']
+                params['extract'] = extract_options
+            response = self.scrape_url(url, params=params or None)  # type: ignore[attr-defined]
+            payload = None
+            if isinstance(response, dict):
+                payload = response.get('extract') or response.get('json')
+            return Firecrawl._CompatResponse(payload)
+else:
+    Firecrawl = _FirecrawlBase  # type: ignore
+
 import time
 import os
 from urllib.parse import quote_plus
