@@ -7,3 +7,4 @@ __pycache__/
 
 # Cache and data outputs
 data/cache/
+.venv/

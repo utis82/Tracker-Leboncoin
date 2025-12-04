@@ -1,4 +1,7 @@
-from firecrawl import Firecrawl
+try:
+    from firecrawl import Firecrawl  # type: ignore
+except ImportError:
+    from firecrawl.firecrawl import FirecrawlApp as Firecrawl  # type: ignore
 import time
 import os
 from urllib.parse import quote_plus
@@ -14,12 +17,19 @@ load_dotenv(PROJECT_ROOT / ".env")
 class LeboncoinScraper:
     """Scraper pour les annonces Leboncoin via Firecrawl"""
     
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        page_retries: int = 3,
+        retry_delay: float = 3.0,
+    ):
         """
         Initialise le scraper Firecrawl
         
         Args:
             api_key: Clé API Firecrawl (ou via variable d'environnement FIRECRAWL_API_KEY)
+            page_retries: Nombre de tentatives par page avant d'abandonner
+            retry_delay: Temps (en secondes) entre deux tentatives
         """
         if api_key is None:
             api_key = os.getenv('FIRECRAWL_API_KEY')
@@ -32,6 +42,8 @@ class LeboncoinScraper:
         
         self.fc = Firecrawl(api_key=api_key)
         self.base_url = "https://www.leboncoin.fr/recherche"
+        self.page_retries = max(1, page_retries)
+        self.retry_delay = max(0.0, retry_delay)
         
     def build_url(self, model: str, year_min: int, year_max: int, page: int = 1) -> str:
         """
@@ -74,79 +86,90 @@ class LeboncoinScraper:
         Returns:
             Liste de dictionnaires contenant les données d'annonces
         """
-        try:
-            print(f"📡 Scraping: {url}")
-            
-            # Schema enrichi pour extraire plus de données
-            schema = {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "title": {
-                            "type": "string",
-                            "description": "Le titre complet de l'annonce"
-                        },
-                        "price": {
-                            "type": "string",
-                            "description": "Le prix en euros (avec ou sans le symbole €)"
-                        },
-                        "mileage": {
-                            "type": "string",
-                            "description": "Le kilométrage (avec ou sans 'km')"
-                        },
-                        "year": {
-                            "type": ["string", "integer"],
-                            "description": "L'année de mise en circulation"
-                        },
-                        "location": {
-                            "type": "string",
-                            "description": "La ville ou localisation"
-                        },
-                        "link": {
-                            "type": "string",
-                            "description": "Le lien complet vers l'annonce"
-                        },
-                        "photo": {
-                            "type": "string",
-                            "description": "L'URL de la première photo de l'annonce"
-                        }
+        print(f"📡 Scraping: {url}")
+
+        # Schema enrichi pour extraire plus de données
+        schema = {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "Le titre complet de l'annonce"
                     },
-                    "required": ["price", "mileage"]
-                }
+                    "price": {
+                        "type": "string",
+                        "description": "Le prix en euros (avec ou sans le symbole €)"
+                    },
+                    "mileage": {
+                        "type": "string",
+                        "description": "Le kilométrage (avec ou sans 'km')"
+                    },
+                    "year": {
+                        "type": ["string", "integer"],
+                        "description": "L'année de mise en circulation"
+                    },
+                    "location": {
+                        "type": "string",
+                        "description": "La ville ou localisation"
+                    },
+                    "link": {
+                        "type": "string",
+                        "description": "Le lien complet vers l'annonce"
+                    },
+                    "photo": {
+                        "type": "string",
+                        "description": "L'URL de la première photo de l'annonce"
+                    }
+                },
+                "required": ["price", "mileage"]
             }
-            
-            doc = self.fc.scrape(
-                url,
-                formats=[{
-                    "type": "json",
-                    "prompt": """Extract all motorcycle ads from this Leboncoin page.
-                    For each ad, extract:
-                    - title (full listing title)
-                    - price (in euros)
-                    - mileage (in km)
-                    - year (registration year)
-                    - location (city)
-                    - link (full URL to the ad)
-                    - photo (URL of the main image)
-                    
-                    Return an array of all ads found on the page.""",
-                    "schema": schema
-                }]
-            )
-            
-            # Extraction des données
-            if hasattr(doc, 'json') and doc.json:
-                ads = doc.json if isinstance(doc.json, list) else [doc.json]
-                print(f"✅ {len(ads)} annonces extraites")
-                return ads
-            else:
-                print("⚠️ Aucune donnée JSON retournée par Firecrawl")
-                return []
-                
-        except Exception as e:
-            print(f"❌ Erreur lors du scraping: {str(e)}")
-            return []
+        }
+
+        last_error: Optional[Exception] = None
+        for attempt in range(1, self.page_retries + 1):
+            if attempt > 1:
+                print(f"↻ Nouvelle tentative {attempt}/{self.page_retries} après erreur précédente...")
+            try:
+                doc = self.fc.scrape(
+                    url,
+                    formats=[{
+                        "type": "json",
+                        "prompt": """Extract all motorcycle ads from this Leboncoin page.
+                        For each ad, extract:
+                        - title (full listing title)
+                        - price (in euros)
+                        - mileage (in km)
+                        - year (registration year)
+                        - location (city)
+                        - link (full URL to the ad)
+                        - photo (URL of the main image)
+                        
+                        Return an array of all ads found on the page.""",
+                        "schema": schema
+                    }]
+                )
+
+                if hasattr(doc, 'json') and doc.json:
+                    ads = doc.json if isinstance(doc.json, list) else [doc.json]
+                    print(f"✅ {len(ads)} annonces extraites")
+                    return ads
+
+                # Pas d'exception mais aucune donnée: on tente à nouveau
+                print("⚠️ Aucune donnée JSON retournée par Firecrawl sur cette tentative")
+            except Exception as e:
+                last_error = e
+                print(f"⚠️ Erreur Firecrawl tentative {attempt}/{self.page_retries}: {e}")
+
+            if attempt < self.page_retries:
+                time.sleep(self.retry_delay)
+
+        if last_error:
+            print(f"❌ Erreur lors du scraping après {self.page_retries} tentatives: {last_error}")
+        else:
+            print("⚠️ Firecrawl n'a renvoyé aucune donnée après plusieurs tentatives")
+        return []
     
     def scrape(self, model: str, year_min: int, year_max: int, max_pages: int = 3) -> List[Dict]:
         """

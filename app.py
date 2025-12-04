@@ -198,7 +198,10 @@ def get_history_options(cache: dict) -> list:
 
 def parse_iso_datetime(value: str):
     try:
-        return datetime.fromisoformat(value)
+        dt = datetime.fromisoformat(value)
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
     except (TypeError, ValueError):
         return None
 
@@ -482,13 +485,13 @@ def build_visual_outputs(data_payload, watchlist_data, filters):
     watchlist_data = watchlist_data or []
     if not data_payload or not data_payload.get('combined_records'):
         empty_msg = html.Div("Commencez par lancer un scraping ou charger une recherche depuis l'historique.", style={'textAlign': 'center', 'color': COLORS['secondary'], 'padding': '40px'})
-        return (hidden_section_style(), empty_msg,
-                hidden_section_style(), None,
-                hidden_section_style(), None,
-                hidden_section_style(), None,
-                hidden_section_style(), None,
-                hidden_section_style(), None,
-                None)
+        return (
+            hidden_section_style(), empty_msg,
+            hidden_section_style(), None,
+            hidden_section_style(), None,
+            hidden_section_style(), None,
+            None
+        )
     
     df = ensure_dataframe_ready(data_payload['combined_records'])
     df = apply_watchlist(df, watchlist_data)
@@ -506,13 +509,13 @@ def build_visual_outputs(data_payload, watchlist_data, filters):
     
     if filtered_df.empty:
         empty_msg = html.Div("Aucune annonce ne correspond à vos filtres. Ajustez vos critères.", style={'textAlign': 'center', 'color': '#f4212e', 'padding': '40px'})
-        return (hidden_section_style(), empty_msg,
-                hidden_section_style(), None,
-                hidden_section_style(), None,
-                hidden_section_style(), None,
-                hidden_section_style(), None,
-                hidden_section_style(), None,
-                None)
+        return (
+            hidden_section_style(), empty_msg,
+            hidden_section_style(), None,
+            hidden_section_style(), None,
+            hidden_section_style(), None,
+            None
+        )
     
     scatter_fig = create_scatter_plot(filtered_df)
     graph_div = dcc.Graph(
@@ -535,19 +538,6 @@ def build_visual_outputs(data_payload, watchlist_data, filters):
         map_div = None
         map_style = hidden_section_style()
     
-    duration_fig = create_duration_plot(filtered_df)
-    if duration_fig:
-        duration_div = dcc.Graph(
-            id='duration-graph',
-            figure=duration_fig,
-            style={'height': '500px'},
-            config={'displayModeBar': True, 'displaylogo': False}
-        )
-        duration_style = visible_section_style()
-    else:
-        duration_div = None
-        duration_style = hidden_section_style()
-    
     comparison_fig = create_comparison_plot(filtered_df)
     if comparison_fig:
         comparison_div = dcc.Graph(
@@ -560,20 +550,6 @@ def build_visual_outputs(data_payload, watchlist_data, filters):
     else:
         comparison_div = None
         comparison_style = hidden_section_style()
-    
-    history_df = build_history_dataframe()
-    trend_fig = create_trend_plot(history_df)
-    if trend_fig:
-        trend_div = dcc.Graph(
-            id='trend-graph',
-            figure=trend_fig,
-            style={'height': '500px'},
-            config={'displayModeBar': False, 'displaylogo': False}
-        )
-        trend_style = visible_section_style()
-    else:
-        trend_div = None
-        trend_style = hidden_section_style()
     
     watchlist_hits = filtered_df[filtered_df['is_watchlist_hit']]
     if not watchlist_hits.empty:
@@ -599,12 +575,8 @@ def build_visual_outputs(data_payload, watchlist_data, filters):
         graph_div,
         map_style,
         map_div,
-        duration_style,
-        duration_div,
         comparison_style,
         comparison_div,
-        trend_style,
-        trend_div,
         matches_style,
         matches_content,
         listings
@@ -695,7 +667,7 @@ def ensure_dataframe_ready(records: list) -> pd.DataFrame:
 
 
 def fetch_search_results(model: str, year_min: int, year_max: int, pages: int,
-                         use_cache: bool, search_cache: dict):
+                         use_cache: bool, search_cache: dict, api_key: str | None = None):
     """Récupère les résultats (cache ou scraping) et met à jour le cache si besoin."""
     search_key = build_search_key(model, year_min, year_max, pages)
     entry = search_cache.get(search_key)
@@ -703,7 +675,8 @@ def fetch_search_results(model: str, year_min: int, year_max: int, pages: int,
         if entry:
             return entry.get('data', []), entry, True, search_key, search_cache
         return None, None, True, search_key, search_cache
-    scraper = LeboncoinScraper()
+    custom_key = api_key.strip() if api_key else None
+    scraper = LeboncoinScraper(api_key=custom_key)
     raw_data = scraper.scrape(model, year_min, year_max, pages)
     timestamp = datetime.now(timezone.utc).isoformat()
     label = build_search_label(model, year_min, year_max, timestamp)
@@ -858,6 +831,32 @@ app.layout = html.Div(style={
         }),
 
         html.Div(style={'marginTop': '20px', 'display': 'flex', 'flexDirection': 'column', 'gap': '15px'}, children=[
+            html.Div(children=[
+                html.Label('Clé API Firecrawl (optionnel)', style={
+                    'fontSize': '0.9rem',
+                    'marginBottom': '8px',
+                    'display': 'block'
+                }),
+                dcc.Input(
+                    id='input-api-key',
+                    type='password',
+                    placeholder='Collez ici une clé pour cette session',
+                    style={
+                        'width': '100%',
+                        'padding': '12px',
+                        'fontSize': '1rem',
+                        'border': f'1px solid {COLORS["border"]}',
+                        'borderRadius': '8px',
+                        'backgroundColor': COLORS['background'],
+                        'color': COLORS['text']
+                    }
+                ),
+                html.Div("Laissez vide pour utiliser la clé configurée dans le .env.", style={
+                    'color': COLORS['secondary'],
+                    'fontSize': '0.85rem',
+                    'marginTop': '5px'
+                })
+            ]),
             dcc.Checklist(
                 id='use-cache-toggle',
                 options=[{'label': "♻️ Utiliser les données en cache si disponibles (pas de nouveau scraping)", 'value': 'use_cache'}],
@@ -1015,13 +1014,8 @@ app.layout = html.Div(style={
     # Carte
     html.Div(id='map-container', style=hidden_section_style()),
 
-    # Graphique durée vs prix
-    html.Div(id='duration-container', style=hidden_section_style()),
-
     # Graphiques comparatifs
     html.Div(id='comparison-container', style=hidden_section_style()),
-    html.Div(id='trend-container', style=hidden_section_style()),
-
     # Watchlist matches
     html.Div(id='watchlist-matches', style=hidden_section_style()),
     
@@ -1047,12 +1041,8 @@ app.layout = html.Div(style={
      Output('graph-container', 'children'),
      Output('map-container', 'style'),
      Output('map-container', 'children'),
-     Output('duration-container', 'style'),
-     Output('duration-container', 'children'),
      Output('comparison-container', 'style'),
      Output('comparison-container', 'children'),
-     Output('trend-container', 'style'),
-     Output('trend-container', 'children'),
      Output('watchlist-matches', 'style'),
      Output('watchlist-matches', 'children'),
      Output('listings-container', 'children'),
@@ -1072,13 +1062,14 @@ app.layout = html.Div(style={
      State('input-year-max', 'value'),
      State('input-pages', 'value'),
      State('use-cache-toggle', 'value'),
-     State('scraped-data', 'data')]
+     State('scraped-data', 'data'),
+     State('input-api-key', 'value')]
 )
 def refresh_data_store(n_clicks, history_selection, watchlist_data,
                        price_min, price_max, mileage_min, mileage_max,
                        score_min, filter_options, condition_values,
                        model, year_min, year_max, pages,
-                       use_cache_values, existing_data):
+                       use_cache_values, existing_data, api_key_input):
     history_selection = history_selection or []
     filter_options = filter_options or []
     filters = {
@@ -1136,7 +1127,7 @@ def refresh_data_store(n_clicks, history_selection, watchlist_data,
     
     if perform_scrape:
         raw_data, entry, used_cache, search_key, search_cache = fetch_search_results(
-            model, year_min, year_max, pages, use_cache, search_cache
+            model, year_min, year_max, pages, use_cache, search_cache, api_key_input
         )
         history_options = get_history_options(search_cache)
         
@@ -1346,122 +1337,6 @@ def create_map(df):
         )
     )
     
-    return fig
-
-
-def create_duration_plot(df):
-    """Crée le graphique durée estimée vs prix."""
-    if 'estimated_duration_days' not in df.columns:
-        return None
-    duration_df = df.dropna(subset=['estimated_duration_days'])
-    if duration_df.empty:
-        return None
-    
-    def build_hover(row):
-        text = f"<b>{row.get('title', 'N/A')[:50]}</b><br>"
-        text += f"💰 {format_value(row.get('price'), '€')}<br>"
-        duration = row.get('estimated_duration_days')
-        duration_text = f"{int(duration)} jour(s) estimés" if duration and not pd.isna(duration) else "Durée inconnue"
-        text += f"⏱️ {duration_text}<br>"
-        text += f"📍 {row.get('location', 'N/A')}<br>"
-        text += f"🧾 {row.get('source', 'Recherche')}"
-        return text
-    
-    fig = go.Figure()
-    groups = duration_df['source'].fillna('Recherche').unique() if 'source' in duration_df.columns else ['Recherche']
-    
-    for idx, group in enumerate(groups):
-        subset = duration_df if 'source' not in duration_df.columns else duration_df[duration_df['source'] == group]
-        if subset.empty:
-            continue
-        hover_text = subset.apply(build_hover, axis=1)
-        fig.add_trace(go.Scatter(
-            x=subset['price'],
-            y=subset['estimated_duration_days'],
-            mode='markers',
-            name=f"{group} (durée)",
-            marker=dict(
-                size=12,
-                color=TRACE_COLORS[idx % len(TRACE_COLORS)],
-                line=dict(width=1, color='white')
-            ),
-            text=hover_text,
-            hovertemplate='%{text}<extra></extra>',
-            customdata=subset[['link']].values if 'link' in subset.columns else None
-        ))
-    
-    if len(duration_df) >= 2:
-        try:
-            x_vals = duration_df['price'].values
-            y_vals = duration_df['estimated_duration_days'].values
-            slope, intercept = np.polyfit(x_vals, y_vals, 1)
-            x_line = np.linspace(duration_df['price'].min(), duration_df['price'].max(), 50)
-            y_line = slope * x_line + intercept
-            fig.add_trace(go.Scatter(
-                x=x_line,
-                y=y_line,
-                mode='lines',
-                name='Tendance estimée',
-                line=dict(color=COLORS['secondary'], dash='dash')
-            ))
-        except (ValueError, np.linalg.LinAlgError):
-            pass
-    
-    fig.update_layout(
-        title=dict(
-            text='Durée estimée de vente vs Prix',
-            font=dict(size=22, color=COLORS['text'])
-        ),
-        xaxis=dict(
-            title='Prix (€)',
-            gridcolor=COLORS['border'],
-            color=COLORS['text'],
-            tickformat=','
-        ),
-        yaxis=dict(
-            title='Durée estimée (jours)',
-            gridcolor=COLORS['border'],
-            color=COLORS['text']
-        ),
-        plot_bgcolor=COLORS['card'],
-        paper_bgcolor=COLORS['card'],
-        hovermode='closest',
-        clickmode='event+select',
-        font=dict(color=COLORS['text'])
-    )
-    
-    return fig
-
-
-def create_trend_plot(history_df: pd.DataFrame):
-    """Crée une courbe d'évolution des prix moyens."""
-    if history_df is None or history_df.empty:
-        return None
-    history_df['date'] = pd.to_datetime(history_df['timestamp']).dt.date
-    recent = history_df[history_df['date'] >= (datetime.utcnow().date() - pd.Timedelta(days=60))]
-    if recent.empty:
-        recent = history_df
-    grouped = recent.groupby(['date', 'source']).agg({'price': 'mean'}).reset_index()
-    if grouped.empty:
-        return None
-    fig = go.Figure()
-    for source in grouped['source'].unique():
-        subset = grouped[grouped['source'] == source]
-        fig.add_trace(go.Scatter(
-            x=subset['date'],
-            y=subset['price'],
-            mode='lines+markers',
-            name=source,
-            line=dict(shape='spline')
-        ))
-    fig.update_layout(
-        title="Tendance des prix moyens (historique)",
-        xaxis_title="Date",
-        yaxis_title="Prix moyen (€)",
-        plot_bgcolor=COLORS['card'],
-        paper_bgcolor=COLORS['card'],
-        font=dict(color=COLORS['text'])
-    )
     return fig
 
 
@@ -1727,7 +1602,7 @@ def import_caches(search_contents, history_contents):
 # Callback client-side pour ouvrir un nouvel onglet sur clic d'un point du graphique
 app.clientside_callback(
     """
-    function(scatterClick, mapClick, durationClick) {
+    function(scatterClick, mapClick) {
         const ctx = dash_clientside.callback_context;
         if (!ctx || !ctx.triggered || ctx.triggered.length === 0) {
             return window.dash_clientside.no_update;
@@ -1738,8 +1613,6 @@ app.clientside_callback(
             clickData = scatterClick;
         } else if (triggered === 'map-graph.clickData') {
             clickData = mapClick;
-        } else if (triggered === 'duration-graph.clickData') {
-            clickData = durationClick;
         } else {
             return window.dash_clientside.no_update;
         }
@@ -1759,7 +1632,6 @@ app.clientside_callback(
     Output('link-opener', 'data'),
     Input('ads-graph', 'clickData'),
     Input('map-graph', 'clickData'),
-    Input('duration-graph', 'clickData'),
     prevent_initial_call=True
 )
 
